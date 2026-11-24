@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>3D Supermarket</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #eef1f4; font-family: Outfit, system-ui, sans-serif; }
+  #app canvas { display: block; touch-action: none; cursor: grab; }
+  #app canvas:active { cursor: grabbing; }
+  .glass { background: rgba(255,255,255,.82); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+           border: 1px solid rgba(0,0,0,.06); box-shadow: 0 8px 28px rgba(20,40,30,.14); border-radius: 16px; }
+
+  #brand { position: fixed; top: 16px; left: 16px; padding: 12px 16px; display: flex; gap: 12px; align-items: center; }
+  #brand .logo { width: 38px; height: 38px; border-radius: 11px; background: #1f8a4c; display: grid; place-items: center; }
+  #brand h1 { margin: 0; font-size: 18px; font-weight: 800; color: #14321f; letter-spacing: .2px; }
+  #brand p { margin: 2px 0 0; font-size: 12.5px; color: #557064; }
+
+  #modes { position: fixed; top: 16px; right: 16px; padding: 5px; display: flex; gap: 4px; }
+  #modes button, #goto button { font: 600 14px Outfit, sans-serif; border: 0; cursor: pointer; border-radius: 11px; padding: 9px 14px; background: transparent; color: #2b4a3a; }
+  #modes button.on { background: #1f8a4c; color: #fff; }
+
+  #goto { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%); padding: 6px; display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; max-width: calc(100vw - 260px); }
+  #goto span { font: 600 12px Outfit; color: #7a8f84; padding: 10px 6px 0 8px; text-transform: uppercase; letter-spacing: 1px; }
+  #goto button:hover { background: #e3f3e9; }
+
+  #map { position: fixed; right: 16px; bottom: 16px; padding: 8px; }
+  #map canvas { display: block; width: 190px; height: 200px; cursor: crosshair; border-radius: 10px; }
+
+  #help { position: fixed; left: 16px; bottom: 16px; padding: 10px 14px; font-size: 12.5px; color: #3f5a4c; line-height: 1.6; }
+  #help b { display: inline-block; min-width: 22px; padding: 0 5px; border-radius: 5px; background: #e6ece8; text-align: center; color: #1f3b2c; font-weight: 600; }
+
+  #joy { position: fixed; left: 24px; bottom: 24px; width: 120px; height: 120px; border-radius: 50%; display: none;
+         background: rgba(255,255,255,.55); border: 1px solid rgba(0,0,0,.08); touch-action: none; }
+  #joy i { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%; background: #1f8a4c; opacity: .85; }
+
+  #loading { position: fixed; inset: 0; display: grid; place-items: center; background: #eef1f4; color: #1f8a4c; font: 600 18px Outfit; transition: opacity .5s; }
+
+  @media (pointer: coarse) { #help { display: none; } #joy { display: block; } #goto { bottom: 160px; max-width: 94vw; } #map { bottom: 16px; } #map canvas { width: 130px; height: 137px; } }
+  @media (max-width: 640px) { #brand p { display: none; } #map { display: none; } #goto { max-width: 94vw; } }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="app"></div>
+
+<div id="brand" class="glass">
+  <div class="logo">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 4h2l2.4 11h11L21 7H6.2"/><circle cx="9" cy="19.5" r="1.4"/><circle cx="17" cy="19.5" r="1.4"/></svg>
+  </div>
+  <div><h1>Green Basket Market</h1><p>Drag to look around · walk with WASD</p></div>
+</div>
+
+<div id="modes" class="glass">
+  <button id="mWalk" class="on">Walk</button>
+  <button id="mView">Overview</button>
+</div>
+
+<div id="goto" class="glass">
+  <span>Go to</span>
+  <button data-go="entrance">Entrance</button>
+  <button data-go="milk">Milk</button>
+  <button data-go="cereal">Cereal</button>
+  <button data-go="bakery">Bakery</button>
+  <button data-go="frozen">Frozen</button>
+  <button data-go="checkout">Checkout</button>
+</div>
+
+<div id="help" class="glass">
+  <b>W</b><b>A</b><b>S</b><b>D</b> move &nbsp; <b>Shift</b> run<br>
+  Drag the mouse to look · click the map to jump
+</div>
+
+<div id="map" class="glass"><canvas id="mapc" width="380" height="400"></canvas></div>
+<div id="joy"><i></i></div>
+<div id="loading">Stocking the shelves…</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// Wait for the font so signs draw with it
+try { await Promise.race([document.fonts.load('800 60px Outfit'), new Promise(r => setTimeout(r, 2500))]); } catch (e) {}
+
+// ---------- Renderer, scene, camera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeef1f4);
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(65, innerWidth / innerHeight, 0.3, 1500);
+
+// ---------- Lights ----------
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd8d0c2, 0.9));
+const sun = new THREE.DirectionalLight(0xfff6ea, 1.3);
+sun.position.set(50, 160, 90);
+sun.target.position.set(0, 0, 38);
+sun.castShadow = true;
+sun.shadow.mapSize.set(4096, 4096);
+Object.assign(sun.shadow.camera, { left: -200, right: 200, top: 200, bottom: -200, near: 10, far: 450 });
+sun.shadow.bias = -0.0004;
+sun.shadow.radius = 4;
+scene.add(sun, sun.target);
+
+// ---------- Small helpers ----------
+const rand = (a, b) => a + Math.random() * (b - a);
+const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+const mat = (color, o = {}) => new THREE.MeshStandardMaterial({ color, roughness: 0.6, ...o });
+const solids = []; // walkable-area blockers {x0,x1,z0,z1,color}
+
+function box(w, h, d, material, x, y, z, parent = scene, shadow = true) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+  m.position.set(x, y, z);
+  m.castShadow = shadow;
+  parent.add(m);
+  return m;
+}
+function block(x0, x1, z0, z1, color = '#9aa8a0') { solids.push({ x0, x1, z0, z1, color }); }
+
+// Text drawn on a canvas, used for signs
+function textTexture(title, sub = '', bg = '#1f8a4c', fg = '#ffffff', w = 1024, h = 256) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = bg; g.beginPath(); g.roundRect(0, 0, w, h, h * 0.16); g.fill();
+  g.fillStyle = fg; g.textAlign = 'center'; g.textBaseline = 'middle';
+  let size = sub ? h * 0.42 : h * 0.55;
+  do { g.font = `800 ${size}px Outfit, sans-serif`; size -= 4; } while (g.measureText(title).width > w * 0.9);
+  g.fillText(title, w / 2, sub ? h * 0.38 : h * 0.52);
+  if (sub) {
+    let s2 = h * 0.2;
+    do { g.font = `600 ${s2}px Outfit, sans-serif`; s2 -= 2; } while (g.measureText(sub).width > w * 0.9);
+    g.globalAlpha = 0.9; g.fillText(sub, w / 2, h * 0.74);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+
+// A flat sign; "both" adds a back face so it reads from both sides
+function sign(title, sub, bg, w, h, x, y, z, rotY = 0, both = false, parent = scene) {
+  const tex = textTexture(title, sub, bg, '#fff', 1024, Math.round(1024 * h / w));
+  const m = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+  const front = new THREE.Mesh(new THREE.PlaneGeometry(w, h), m);
+  front.position.set(x, y, z); front.rotation.y = rotY; parent.add(front);
+  if (both) { const back = front.clone(); back.rotation.y = rotY + Math.PI; parent.add(back); }
+  return front;
+}
+
+// ---------- Store shell (same footprint as the model) ----------
+const X0 = -132, X1 = 132, Z0 = -100, Z1 = 176, H = 32;
+const CX = (X0 + X1) / 2, CZ = (Z0 + Z1) / 2, W = X1 - X0, D = Z1 - Z0;
+
+// Tiled floor texture
+function tileTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  for (let i = 0; i < 4; i++) for (let j = 0; j < 4; j++) {
+    const s = 228 + Math.random() * 10;
+    g.fillStyle = `rgb(${s + 6},${s + 2},${s - 8})`;
+    g.fillRect(i * 128, j * 128, 128, 128);
+  }
+  g.strokeStyle = '#c9c1b2'; g.lineWidth = 3;
+  for (let k = 0; k <= 512; k += 128) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k, 512); g.moveTo(0, k); g.lineTo(512, k); g.stroke(); }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(W / 16, D / 16);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8;
+  return t;
+}
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), mat(0xffffff, { map: tileTexture(), roughness: 0.28 }));
+floor.rotation.x = -Math.PI / 2; floor.position.set(CX, 0, CZ); floor.receiveShadow = true;
+scene.add(floor);
+
+// Ceiling + light strips (hidden in overview mode)
+const ceilingGroup = new THREE.Group(); scene.add(ceilingGroup);
+const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(W, D), new THREE.MeshBasicMaterial({ color: 0xdfe2df }));
+ceiling.rotation.x = Math.PI / 2; ceiling.position.set(CX, H, CZ); ceilingGroup.add(ceiling);
+
+const lampMat = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xfff8ee, emissiveIntensity: 2.2 });
+const lampRows = [-66, -32, -10, 15, 41, 66, 100, 132, 162];
+const lamps = new THREE.InstancedMesh(new THREE.BoxGeometry(18, 0.4, 2.2), lampMat, lampRows.length * 9);
+let li = 0; const lm = new THREE.Matrix4();
+for (const z of lampRows) for (let x = -100; x <= 100; x += 25) lamps.setMatrixAt(li++, lm.makeTranslation(x, H - 0.3, z));
+ceilingGroup.add(lamps);
+
+// Walls (front wall has an entrance gap)
+const wallMat = mat(0xf5f2ec, { roughness: 0.9 });
+const stripeMat = mat(0x1f8a4c, { roughness: 0.5 });
+const DOOR0 = 88, DOOR1 = 118;
+box(W, H, 1, wallMat, CX, H / 2, Z0, scene, false);
+box(1, H, D, wallMat, X0, H / 2, CZ, scene, false);
+box(1, H, D, wallMat, X1, H / 2, CZ, scene, false);
+const frontWall = new THREE.Group(); scene.add(frontWall); // hidden in overview
+box(DOOR0 - X0, H, 1, wallMat, (X0 + DOOR0) / 2, H / 2, Z1, frontWall, false);
+box(X1 - DOOR1, H, 1, wallMat, (DOOR1 + X1) / 2, H / 2, Z1, frontWall, false);
+box(DOOR1 - DOOR0, H - 17, 1, wallMat, (DOOR0 + DOOR1) / 2, 17 + (H - 17) / 2, Z1, frontWall, false);
+// Green brand stripe around the walls
+box(W, 1.6, 0.3, stripeMat, CX, 24, Z0 + 0.7, scene, false);
+box(0.3, 1.6, D, stripeMat, X0 + 0.7, 24, CZ, scene, false);
+box(0.3, 1.6, D, stripeMat, X1 - 0.7, 24, CZ, scene, false);
+// Skirting
+const skirtMat = mat(0x3d4a43);
+box(W, 0.8, 0.4, skirtMat, CX, 0.4, Z0 + 0.7, scene, false);
+box(0.4, 0.8, D, skirtMat, X0 + 0.7, 0.4, CZ, scene, false);
+box(0.4, 0.8, D, skirtMat, X1 - 0.7, 0.4, CZ, scene, false);
+
+// Entrance: glass doors, outside view, welcome mat
+const glassMat = new THREE.MeshStandardMaterial({ color: 0xcfe9f5, roughness: 0.05, metalness: 0.1, transparent: true, opacity: 0.25 });
+const frameMat = mat(0x5f6b66, { metalness: 0.7, roughness: 0.3 });
+box(14, 16, 0.3, glassMat, DOOR0 + 6, 8, Z1 + 0.2, frontWall, false);
+box(14, 16, 0.3, glassMat, DOOR1 - 6, 8, Z1 - 0.4, frontWall, false);
+box(DOOR1 - DOOR0, 1, 1.2, frameMat, (DOOR0 + DOOR1) / 2, 16.5, Z1, frontWall, false);
+const outside = new THREE.Mesh(new THREE.PlaneGeometry(400, 120), new THREE.MeshBasicMaterial({ color: 0xcfe6f7 }));
+outside.position.set(100, 40, Z1 + 60); outside.rotation.y = Math.PI; scene.add(outside);
+const street = new THREE.Mesh(new THREE.PlaneGeometry(400, 70), mat(0x9aa3a0, { roughness: 0.9 }));
+street.rotation.x = -Math.PI / 2; street.position.set(100, -0.05, Z1 + 30); scene.add(street);
+const welcome = new THREE.Mesh(new THREE.PlaneGeometry(26, 9), new THREE.MeshStandardMaterial({ map: textTexture('WELCOME', '', '#2f3d37', '#d8e6dd', 1024, 354), roughness: 0.95 }));
+welcome.rotation.x = -Math.PI / 2; welcome.position.set(103, 0.03, 169); welcome.receiveShadow = true; scene.add(welcome);
+sign('THANK YOU', 'Please come again', '#1f8a4c', 22, 5, 103, 22, Z1 - 0.6, Math.PI, false, frontWall);
+
+// ---------- Products (drawn with instancing for speed) ----------
+// Grey label texture: multiplied by each product's colour
+function labelTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#c4c4c4'; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#ffffff'; g.fillRect(0, 38, 128, 50);
+  g.fillStyle = '#8a8a8a'; g.beginPath(); g.arc(40, 63, 13, 0, 7); g.fill();
+  g.fillStyle = '#9d9d9d'; g.fillRect(62, 52, 46, 7); g.fillRect(62, 66, 32, 6);
+  g.fillStyle = '#5a5a5a'; g.fillRect(0, 104, 128, 6);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const labelTex = labelTexture();
+
+// Bottle shape (height 1, radius 0.5)
+const bottlePts = [[0, 0], [.47, 0], [.5, .05], [.5, .6], [.42, .72], [.2, .82], [.17, .86], [.17, .96], [.2, .97], [.2, 1], [0, 1]]
+  .map(p => new THREE.Vector2(p[0], p[1]));
+const bottleGeo = new THREE.LatheGeometry(bottlePts, 18).translate(0, -0.5, 0);
+
+const KINDS = {
+  box:    { geo: new THREE.BoxGeometry(1, 1, 1),            mat: mat(0xffffff, { map: labelTex, roughness: 0.55 }) },
+  can:    { geo: new THREE.CylinderGeometry(.5, .5, 1, 18), mat: mat(0xffffff, { map: labelTex, roughness: 0.3, metalness: 0.45 }) },
+  bottle: { geo: bottleGeo,                                 mat: mat(0xffffff, { map: labelTex, roughness: 0.2 }) },
+  bread:  { geo: new THREE.SphereGeometry(.5, 18, 12),      mat: mat(0xffffff, { roughness: 0.85 }) },
+};
+const items = { box: [], can: [], bottle: [], bread: [] };
+const _q = new THREE.Quaternion(), _up = new THREE.Vector3(0, 1, 0);
+
+// y = bottom of the product
+function addProduct(kind, x, y, z, rotY, sx, sy, sz, color) {
+  _q.setFromAxisAngle(_up, rotY + rand(-0.06, 0.06));
+  const m = new THREE.Matrix4().compose(new THREE.Vector3(x, y + sy / 2, z), _q, new THREE.Vector3(sx, sy, sz));
+  items[kind].push({ m, c: new THREE.Color(color) });
+}
+
+// Product families: shape, width range, height range, colours
+const CAT = {
+  bread:  { kinds: ['bread'],         w: [2.6, 3.4], h: [1.3, 1.8], c: ['#c98a4b', '#b9733a', '#d9a066', '#a8642f', '#e0b07a'] },
+  jars:   { kinds: ['can'],           w: [1.2, 1.5], h: [1.6, 2.1], c: ['#e8b04b', '#c0392b', '#8e5a2b', '#f1c40f', '#7a3e9d'] },
+  snacks: { kinds: ['box'],           w: [1.8, 2.6], h: [1.9, 2.6], c: ['#e74c3c', '#f39c12', '#f1c40f', '#e67e22', '#9b59b6', '#2ecc71'] },
+  milk:   { kinds: ['box', 'bottle'], w: [1.3, 1.6], h: [2.3, 2.7], c: ['#ffffff', '#eaf3ff', '#cfe3ff', '#ffffff', '#5dade2'] },
+  cereal: { kinds: ['box'],           w: [2.1, 2.6], h: [2.5, 2.8], c: ['#f1c40f', '#e74c3c', '#2980b9', '#27ae60', '#e67e22', '#8e44ad'] },
+  pasta:  { kinds: ['box'],           w: [1.6, 2.2], h: [1.8, 2.5], c: ['#2c6fb7', '#f5d76e', '#d35400', '#16a085', '#c0392b'] },
+  cans:   { kinds: ['can'],           w: [1.1, 1.4], h: [1.4, 1.8], c: ['#c0392b', '#27ae60', '#f39c12', '#2c3e50', '#d35400', '#bdc3c7'] },
+  clean:  { kinds: ['bottle'],        w: [1.2, 1.6], h: [2.0, 2.7], c: ['#3498db', '#1abc9c', '#9b59b6', '#f1c40f', '#ecf0f1', '#e84393'] },
+  frozen: { kinds: ['box'],           w: [2.0, 2.6], h: [1.6, 2.3], c: ['#74b9ff', '#a29bfe', '#ffffff', '#55efc4', '#fd79a8'] },
+  drinks: { kinds: ['bottle', 'can'], w: [1.1, 1.4], h: [2.2, 2.7], c: ['#e74c3c', '#2ecc71', '#f39c12', '#3498db', '#2d3436', '#fdcb6e'] },
+};
+
+// Fill one shelf level with groups of identical products ("facings")
+function fillRow(put, a, b, y, zFront, cat) {
+  let x = a + 0.4;
+  while (x < b - 1) {
+    const kind = pick(cat.kinds), w = rand(...cat.w), h = rand(...cat.h), col = pick(cat.c);
+    const depth = kind === 'box' ? 1.25 : kind === 'bread' ? w * 0.55 : w;
+    const n = 2 + Math.floor(Math.random() * 4);
+    for (let i = 0; i < n && x + w < b - 0.3; i++) {
+      if (Math.random() > 0.04) put(kind, x + w / 2, y, zFront, w * 0.94, h, depth * 0.94, col); // a few empty spots
+      x += w + 0.1;
+    }
+    x += 0.25;
+  }
+}
+
+// ---------- Shelving unit (gondola) ----------
+const SHELF_D = 1.7, SHELF_H = 13.8, LEVELS = [1.0, 4.2, 7.4, 10.5];
+const shelfMat = mat(0xf2f3f1, { roughness: 0.5 });
+const plinthMat = mat(0x47524c);
+const coldLight = new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0xdff2ff, emissiveIntensity: 2 });
+
+// sides: list of {sd: +1|-1, segs: [{a,b,cat,fridge}]}, a/b go from -1 to 1 along the length
+function gondola({ cx, cz, len, rotY = 0, sides, accent }) {
+  const g = new THREE.Group(); g.position.set(cx, 0, cz); g.rotation.y = rotY; scene.add(g);
+  const accentMat = mat(accent, { roughness: 0.4 });
+  const c = Math.cos(rotY), s = Math.sin(rotY), half = len / 2;
+  const put = (kind, lx, ly, lz, sx, sy, sz, col) => addProduct(kind, cx + lx * c + lz * s, ly, cz - lx * s + lz * c, rotY, sx, sy, sz, col);
+
+  box(len, SHELF_H, 0.3, shelfMat, 0, SHELF_H / 2, 0, g);                  // back panel
+  box(len, 0.7, 0.4, accentMat, 0, SHELF_H + 0.35, 0, g);                  // top trim
+  for (const e of [-1, 1]) box(0.4, SHELF_H, SHELF_D * 2, shelfMat, e * half, SHELF_H / 2, 0, g); // end panels
+
+  for (const side of sides) {
+    const sd = side.sd, zc = sd * SHELF_D / 2;
+    box(len, 1, SHELF_D, plinthMat, 0, 0.5, zc, g);                        // base
+    for (const y of LEVELS.slice(1)) {
+      box(len, 0.25, SHELF_D - 0.1, shelfMat, 0, y - 0.13, zc, g);         // shelf board
+    }
+    for (const y of LEVELS) {
+      box(len, 0.45, 0.08, accentMat, 0, y - 0.1, sd * (SHELF_D + 0.02), g, false); // price strip
+    }
+    for (const seg of side.segs) {
+      const a = seg.a * half, b = seg.b * half;
+      for (const y of LEVELS) fillRow(put, a, b, y + 0.01, sd * 0.95, CAT[seg.cat]);
+      if (seg.fridge) fridgeDoors(g, a, b, sd);
+    }
+  }
+  // Blocker for walking
+  const hx = Math.abs(half * c) + Math.abs(SHELF_D * s), hz = Math.abs(half * s) + Math.abs(SHELF_D * c);
+  block(cx - hx, cx + hx, cz - hz, cz + hz, accent);
+  return g;
+}
+
+// Glass fridge doors in front of a shelf section
+function fridgeDoors(g, a, b, sd) {
+  const n = Math.max(1, Math.round((b - a) / 9)), w = (b - a) / n, z = sd * (SHELF_D + 0.25);
+  for (let i = 0; i < n; i++) {
+    const x = a + w * (i + 0.5);
+    box(w - 0.3, 12.4, 0.12, glassMat, x, 7.4, z, g, false);
+    box(0.3, 12.8, 0.3, frameMat, a + w * i, 7.4, z, g, false);
+    box(0.15, 4, 0.25, frameMat, x + w / 2 - 0.9, 7.6, z + sd * 0.2, g, false);
+  }
+  box(0.3, 12.8, 0.3, frameMat, b, 7.4, z, g, false);
+  box(b - a, 0.5, 0.5, coldLight, (a + b) / 2, 13.5, z, g, false);
+}
+
+// ---------- Aisles (positions from the model) ----------
+const SHELF_CX = -0.2, SHELF_LEN = 158.2;
+const AISLES = [
+  { z: -42.41, name: 'Bakery & Spreads', accent: '#c0702f',
+    south: [{ a: -1, b: 1, cat: 'bread' }], north: [{ a: -1, b: 1, cat: 'jars' }] },
+  { z: -21.9,  name: 'Snacks & Sweets', accent: '#e67e22',
+    south: [{ a: -1, b: 1, cat: 'snacks' }], north: [{ a: -1, b: 1, cat: 'snacks' }] },
+  { z: 1.09,   name: 'Milk & Cereal', accent: '#2e86de',
+    south: [{ a: -1, b: 0, cat: 'milk', fridge: true }, { a: 0, b: 1, cat: 'cereal' }], north: [{ a: -1, b: 1, cat: 'pasta' }] },
+  { z: 29.27,  name: 'Canned & Pantry', accent: '#27ae60',
+    south: [{ a: -1, b: 1, cat: 'cans' }], north: [{ a: -1, b: 1, cat: 'pasta' }] },
+  { z: 53.57,  name: 'Household', accent: '#8e44ad',
+    south: [{ a: -1, b: 1, cat: 'clean' }], north: [{ a: -1, b: 1, cat: 'clean' }] },
+];
+const wireMat = mat(0x8a948f, { metalness: 0.8, roughness: 0.3 });
+
+AISLES.forEach((A, i) => {
+  gondola({ cx: SHELF_CX, cz: A.z, len: SHELF_LEN, accent: A.accent,
+            sides: [{ sd: 1, segs: A.south }, { sd: -1, segs: A.north }] });
+  // Hanging sign over the middle (reads from both lanes)
+  sign(`Aisle ${i + 1}`, A.name, A.accent, 26, 5.5, 0, 21, A.z, 0, true);
+  // Signs at both ends, facing the side walkways
+  for (const e of [-1, 1]) {
+    const x = SHELF_CX + e * (SHELF_LEN / 2 - 5);
+    sign(`${i + 1}`, A.name, A.accent, 10, 4.2, x, 20, A.z, e * Math.PI / 2, true);
+    for (const off of [-4, 4]) {
+      const wire = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, H - 22), wireMat);
+      wire.position.set(x, 22 + (H - 22) / 2, A.z + (off > 0 ? 0.1 : -0.1)); ceilingGroup.add(wire);
+    }
+  }
+});
+
+// Wall shelves: frozen (left) and drinks (right), both with fridge doors
+gondola({ cx: -117.3, cz: -2.3, len: 158, rotY: Math.PI / 2, accent: '#0fb9b1',
+          sides: [{ sd: 1, segs: [{ a: -1, b: 1, cat: 'frozen', fridge: true }] }] });
+gondola({ cx: 116, cz: -2.3, len: 158, rotY: -Math.PI / 2, accent: '#e84118',
+          sides: [{ sd: 1, segs: [{ a: -1, b: 1, cat: 'drinks', fridge: true }] }] });
+sign('FROZEN FOOD', 'Ice cream · Meals · Vegetables', '#0fb9b1', 40, 6, X0 + 0.7, 22, -2.3, Math.PI / 2);
+sign('COLD DRINKS', 'Water · Juice · Soda', '#e84118', 40, 6, X1 - 0.7, 22, -2.3, -Math.PI / 2);
+
+// ---------- Bakery & deli counter (back wall) ----------
+const woodMat = mat(0x9a6233, { roughness: 0.7 });
+const counterTop = mat(0xf7f4ee, { roughness: 0.3 });
+box(154, 7, 5, woodMat, -2.4, 3.5, -89, scene);
+box(155, 0.5, 5.6, counterTop, -2.4, 7.25, -89, scene);
+box(150, 3.6, 4.2, glassMat, -2.4, 9.3, -89, scene, false);
+for (let x = -76; x < 72; x += 3.6) {
+  addProduct('bread', x + rand(-0.3, 0.3), 7.5, -89 + rand(-0.8, 0.8), rand(0, 3), rand(2.4, 3.2), rand(1.2, 1.7), rand(1.4, 1.9), pick(CAT.bread.c));
+}
+// Wooden racks with bread on the back wall
+for (const y of [8, 12, 16]) {
+  box(150, 0.4, 3, woodMat, -2.4, y - 0.2, Z0 + 2.2, scene);
+  for (let x = -75; x < 70; x += 3.4) addProduct('bread', x, y, Z0 + 2.2, rand(-0.3, 0.3), rand(2.6, 3.2), rand(1.3, 1.8), rand(1.6, 2.2), pick(CAT.bread.c));
+}
+sign('FRESH BAKERY & DELI', 'Baked every morning', '#c0702f', 56, 8, -2.4, 24, Z0 + 0.8, 0);
+block(-80, 76, -92, -86.5, '#c0702f');
+block(X0, X1, Z0, -92, '#c0702f'); // staff area behind the counter
+
+// ---------- Checkouts (positions from the model) ----------
+const beltMat = mat(0x222826, { roughness: 0.8 });
+const bodyMat = mat(0xf2f3f1, { roughness: 0.4 });
+const screenMat = new THREE.MeshStandardMaterial({ color: 0x0b1a13, emissive: 0x35d07f, emissiveIntensity: 0.6 });
+[-77, -10.9, 52.2].forEach((x, i) => {
+  const z = 159;
+  box(17, 6, 4.2, bodyMat, x, 3, z);
+  box(17.2, 0.6, 4.4, stripeMat, x, 6.0, z, scene, false);
+  box(12, 0.3, 3, beltMat, x - 2, 6.45, z);
+  box(3, 2, 3, mat(0x37423d), x + 6.4, 7.3, z);
+  const screen = box(2.6, 1.8, 0.15, screenMat, x + 6.4, 9.4, z - 0.6, scene, false);
+  screen.rotation.x = -0.4;
+  // Lane pole with number
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 18), frameMat);
+  pole.position.set(x + 8.8, 9, z - 1.5); scene.add(pole);
+  const num = new THREE.Mesh(new THREE.BoxGeometry(3.2, 3.2, 3.2), new THREE.MeshBasicMaterial({ map: textTexture(`${i + 1}`, '', '#1f8a4c', '#fff', 256, 256), toneMapped: false }));
+  num.position.set(x + 8.8, 19.5, z - 1.5); scene.add(num);
+  // Small candy rack by each lane
+  box(1.5, 5, 3, shelfMat, x - 9.6, 2.5, z);
+  for (let j = 0; j < 2; j++)
+    addProduct('box', x - 9.6, 5, z - 0.7 + j * 1.4, Math.PI / 2, 1.1, 1.4, 0.9, pick(CAT.snacks.c));
+  block(x - 10.4, x + 9.2, z - 2.3, z + 2.3, '#1f8a4c');
+});
+sign('CHECKOUT', 'Pay here', '#1f8a4c', 24, 5, -12, 24, 150, Math.PI, true);
+
+// ---------- Shopping carts ----------
+function wireTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d');
+  g.strokeStyle = '#fff'; g.lineWidth = 5;
+  for (let k = 0; k <= 64; k += 16) { g.beginPath(); g.moveTo(k, 0); g.lineTo(k, 64); g.moveTo(0, k); g.lineTo(64, k); g.stroke(); }
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 2);
+  return t;
+}
+const cartMat = new THREE.MeshStandardMaterial({ color: 0xc9d0cc, metalness: 0.85, roughness: 0.3, map: wireTexture(), alphaMap: wireTexture(), transparent: true, alphaTest: 0.4, side: THREE.DoubleSide });
+const wheelMat = mat(0x1c1f1e);
+const handleMat = mat(0x1f8a4c, { roughness: 0.4 });
+function cart(x, z, rot) {
+  const g = new THREE.Group(); g.position.set(x, 0, z); g.rotation.y = rot; scene.add(g);
+  box(4.2, 3.4, 6.6, cartMat, 0, 5.4, 0, g);
+  box(4.2, 0.3, 0.3, handleMat, 0, 7.6, 3.6, g);
+  for (const sx of [-1.8, 1.8]) {
+    box(0.2, 3.6, 0.2, frameMat, sx, 1.9, -2.6, g);
+    box(0.2, 5.6, 0.2, frameMat, sx, 3.4, 2.8, g);
+    for (const sz of [-2.6, 2.8]) {
+      const wh = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.35, 14), wheelMat);
+      wh.rotation.z = Math.PI / 2; wh.position.set(sx, 0.45, sz); g.add(wh);
+    }
+  }
+  box(3.8, 0.15, 6, frameMat, 0, 1.8, 0, g);
+  block(x - 3.6, x + 3.6, z - 3.6, z + 3.6, '#7f8c86');
+}
+for (let k = 0; k < 4; k++) cart(125, 128 + k * 3.2, 0);
+cart(-40, 15, 1.2);
+cart(30, -32, -1.9);
+cart(-95, 66, 0.4);
+
+// ---------- Plants by the entrance ----------
+const potMat = mat(0x2f3d37), leafMat = mat(0x2e8b57, { roughness: 0.8 });
+function plant(x, z) {
+  const pot = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 1.4, 3.5, 18), potMat);
+  pot.position.set(x, 1.75, z); pot.castShadow = true; scene.add(pot);
+  for (let k = 0; k < 6; k++) {
+    const leaf = new THREE.Mesh(new THREE.IcosahedronGeometry(rand(1.3, 2), 1), leafMat);
+    leaf.position.set(x + rand(-1, 1), rand(4.5, 7.5), z + rand(-1, 1)); leaf.castShadow = true; scene.add(leaf);
+  }
+  block(x - 2, x + 2, z - 2, z + 2, '#2e8b57');
+}
+plant(84, 171); plant(122, 171);
+
+// ---------- Fresh produce stands (open floor near the checkouts) ----------
+const FRUITS = [
+  { c: '#d63031', s: [1.2, 1.2] }, { c: '#f39c12', s: [1.25, 1.25] }, { c: '#f9ca24', s: [2.4, 0.8] },
+  { c: '#6ab04c', s: [1.1, 1.1] }, { c: '#e74c3c', s: [1.0, 1.0] }, { c: '#2d6a4f', s: [1.2, 1.5] },
+  { c: '#6c3483', s: [1.1, 1.8] }, { c: '#badc58', s: [1.3, 1.3] }, { c: '#e17055', s: [1.0, 1.1] },
+];
+function produceStand(x, z) {
+  box(26, 4.5, 9, woodMat, x, 2.25, z);
+  box(26.6, 0.5, 9.6, mat(0x6b4423), x, 4.6, z, scene, false);
+  for (let b = 0; b < 3; b++) {           // three bins per stand
+    const f = pick(FRUITS), bx = x - 8.6 + b * 8.6;
+    for (let layer = 0; layer < 2; layer++)
+      for (let i = 0; i < 18; i++) {
+        addProduct('bread', bx + rand(-3.4, 3.4), 4.85 + layer * 0.9, z + rand(-3.6, 3.6), rand(0, 6), f.s[0], f.s[1], f.s[1], f.c);
+      }
+    if (b) box(0.3, 1.2, 9, mat(0x6b4423), bx - 4.3, 5.2, z, scene, false);
+  }
+  block(x - 13.3, x + 13.3, z - 4.8, z + 4.8, '#6ab04c');
+}
+for (const z of [92, 120]) for (const x of [-80, -42, -4, 34, 72]) produceStand(x, z);
+sign('FRESH PRODUCE', 'Fruit & vegetables', '#6ab04c', 34, 6, -4, 22, 106, 0, true);
+
+// ---------- Build instanced products ----------
+let productCount = 0;
+for (const k in items) {
+  const list = items[k];
+  const im = new THREE.InstancedMesh(KINDS[k].geo, KINDS[k].mat, list.length);
+  list.forEach((p, i) => { im.setMatrixAt(i, p.m); im.setColorAt(i, p.c); });
+  im.castShadow = true;
+  scene.add(im);
+  productCount += list.length;
+}
+
+// ---------- Places you can jump to (nav points from the model) ----------
+const PLACES = {
+  entrance: { x: 103, z: 160, yaw: 0,           label: 'Entrance' },
+  milk:     { x: -66.2, z: 12, yaw: 0,          label: 'Milk',     pin: [-66.2, 3.3] },
+  cereal:   { x: 67.2, z: 12, yaw: 0,           label: 'Cereal',   pin: [67.2, 3.4] },
+  bakery:   { x: 69.6, z: -31, yaw: 0,          label: 'Bakery',   pin: [69.6, -37.1] },
+  frozen:   { x: -100, z: 0, yaw: Math.PI / 2,  label: 'Frozen' },
+  checkout: { x: -10, z: 142, yaw: Math.PI,     label: 'Checkout' },
+};
+const rings = [];
+for (const key in PLACES) {
+  const P = PLACES[key];
+  const ring = new THREE.Mesh(new THREE.RingGeometry(1.6, 2.2, 40), new THREE.MeshBasicMaterial({ color: 0x2ecc71, transparent: true, opacity: 0.8, toneMapped: false }));
+  ring.rotation.x = -Math.PI / 2; ring.position.set(P.x, 0.05, P.z); scene.add(ring); rings.push(ring);
+  if (P.pin) {
+    const tag = new THREE.Sprite(new THREE.SpriteMaterial({ map: textTexture(P.label, '', '#2ecc71', '#fff', 512, 160), toneMapped: false }));
+    tag.scale.set(8, 2.5, 1); tag.position.set(P.pin[0], 16.5, P.pin[1] + 2.5); scene.add(tag);
+  }
+}
+
+// ---------- Walking controls ----------
+const EYE = 11, RADIUS = 2.5;
+const player = { x: 103, z: 160, yaw: 0, pitch: -0.04 };
+const keys = new Set();
+const joy = { x: 0, y: 0 };
+let mode = 'walk', tween = null;
+
+function blocked(x, z) {
+  if (x < X0 + RADIUS || x > X1 - RADIUS || z < Z0 + RADIUS || z > Z1 - RADIUS) return true;
+  return solids.some(s => x > s.x0 - RADIUS && x < s.x1 + RADIUS && z > s.z0 - RADIUS && z < s.z1 + RADIUS);
+}
+
+addEventListener('keydown', e => {
+  keys.add(e.code);
+  if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
+});
+addEventListener('keyup', e => keys.delete(e.code));
+addEventListener('blur', () => keys.clear());
+
+// Drag to look
+let drag = null;
+renderer.domElement.addEventListener('pointerdown', e => { if (mode === 'walk') drag = { x: e.clientX, y: e.clientY }; });
+addEventListener('pointermove', e => {
+  if (!drag) return;
+  player.yaw -= (e.clientX - drag.x) * 0.004;
+  player.pitch = THREE.MathUtils.clamp(player.pitch - (e.clientY - drag.y) * 0.004, -1.2, 1.2);
+  drag = { x: e.clientX, y: e.clientY };
+  tween = null;
+});
+addEventListener('pointerup', () => drag = null);
+
+// Touch joystick
+const joyEl = document.getElementById('joy'), knob = joyEl.querySelector('i');
+let joyId = null;
+joyEl.addEventListener('pointerdown', e => { joyId = e.pointerId; joyEl.setPointerCapture(joyId); moveJoy(e); e.stopPropagation(); });
+joyEl.addEventListener('pointermove', e => { if (e.pointerId === joyId) moveJoy(e); });
+joyEl.addEventListener('pointerup', () => { joyId = null; joy.x = joy.y = 0; knob.style.transform = ''; });
+function moveJoy(e) {
+  const r = joyEl.getBoundingClientRect();
+  let dx = (e.clientX - r.left - 60) / 45, dy = (e.clientY - r.top - 60) / 45;
+  const len = Math.hypot(dx, dy); if (len > 1) { dx /= len; dy /= len; }
+  joy.x = dx; joy.y = dy;
+  knob.style.transform = `translate(${dx * 35}px, ${dy * 35}px)`;
+}
+
+function updateWalk(dt) {
+  if (tween) {
+    tween.t = Math.min(1, tween.t + dt / 1.6);
+    const k = tween.t < 0.5 ? 2 * tween.t * tween.t : 1 - Math.pow(-2 * tween.t + 2, 2) / 2; // ease in-out
+    player.x = THREE.MathUtils.lerp(tween.from.x, tween.to.x, k);
+    player.z = THREE.MathUtils.lerp(tween.from.z, tween.to.z, k);
+    player.yaw = tween.from.yaw + tween.dYaw * k;
+    player.pitch = THREE.MathUtils.lerp(tween.from.pitch, -0.04, k) - Math.sin(tween.t * Math.PI) * 0.45;
+    if (tween.t >= 1) tween = null;
+  } else {
+    let f = 0, s = 0;
+    if (keys.has('KeyW') || keys.has('ArrowUp')) f += 1;
+    if (keys.has('KeyS') || keys.has('ArrowDown')) f -= 1;
+    if (keys.has('KeyA')) s -= 1;
+    if (keys.has('KeyD')) s += 1;
+    if (keys.has('ArrowLeft')) player.yaw += 1.8 * dt;
+    if (keys.has('ArrowRight')) player.yaw -= 1.8 * dt;
+    f -= joy.y; s += joy.x;
+    if (f || s) {
+      const speed = (keys.has('ShiftLeft') || keys.has('ShiftRight') ? 75 : 38) * dt;
+      const len = Math.max(1, Math.hypot(f, s));
+      const sin = Math.sin(player.yaw), cos = Math.cos(player.yaw);
+      const dx = (-sin * f + cos * s) / len * speed, dz = (-cos * f - sin * s) / len * speed;
+      if (!blocked(player.x + dx, player.z)) player.x += dx; // slide along walls
+      if (!blocked(player.x, player.z + dz)) player.z += dz;
+    }
+  }
+  const lift = tween ? Math.sin(tween.t * Math.PI) * 22 : 0; // hop over shelves when jumping
+  camera.position.set(player.x, EYE + lift, player.z);
+  camera.rotation.set(player.pitch, player.yaw, 0, 'YXZ');
+}
+
+function goTo(p) {
+  if (mode !== 'walk') setMode('walk');
+  let dYaw = (p.yaw - player.yaw) % (Math.PI * 2);
+  if (dYaw > Math.PI) dYaw -= Math.PI * 2;
+  if (dYaw < -Math.PI) dYaw += Math.PI * 2;
+  tween = { t: 0, from: { ...player }, to: p, dYaw };
+}
+document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => goTo(PLACES[b.dataset.go]));
+
+// ---------- Overview (orbit) mode ----------
+const orbit = new OrbitControls(camera, renderer.domElement);
+orbit.enabled = false; orbit.enableDamping = true;
+orbit.maxPolarAngle = 1.25; orbit.minDistance = 40; orbit.maxDistance = 600;
+
+function setMode(m) {
+  mode = m;
+  document.getElementById('mWalk').classList.toggle('on', m === 'walk');
+  document.getElementById('mView').classList.toggle('on', m === 'view');
+  ceilingGroup.visible = frontWall.visible = m === 'walk';
+  orbit.enabled = m === 'view';
+  if (m === 'view') {
+    tween = null;
+    camera.position.set(0, 170, 235);
+    orbit.target.set(0, 0, 40);
+    orbit.update();
+  }
+}
+document.getElementById('mWalk').onclick = () => setMode('walk');
+document.getElementById('mView').onclick = () => setMode('view');
+
+// ---------- Mini map ----------
+const mapC = document.getElementById('mapc'), mg = mapC.getContext('2d');
+const MS = Math.min((mapC.width - 20) / W, (mapC.height - 20) / D);
+const mx = x => 10 + (x - X0) * MS + ((mapC.width - 20) - W * MS) / 2;
+const mz = z => 10 + (z - Z0) * MS;
+function drawMap() {
+  mg.clearRect(0, 0, mapC.width, mapC.height);
+  mg.fillStyle = '#f4f1ea'; mg.strokeStyle = '#3d4a43'; mg.lineWidth = 3;
+  mg.fillRect(mx(X0), mz(Z0), W * MS, D * MS); mg.strokeRect(mx(X0), mz(Z0), W * MS, D * MS);
+  mg.fillStyle = '#eef1f4'; mg.fillRect(mx(DOOR0), mz(Z1) - 3, (DOOR1 - DOOR0) * MS, 6); // door gap
+  for (const s of solids) {
+    if (s.z1 <= -92 && s.z0 <= Z0) continue; // skip staff area
+    mg.fillStyle = s.color;
+    mg.fillRect(mx(s.x0), mz(s.z0), Math.max(2, (s.x1 - s.x0) * MS), Math.max(2, (s.z1 - s.z0) * MS));
+  }
+  // Player arrow
+  const px = mx(player.x), pz = mz(player.z), a = player.yaw;
+  mg.save(); mg.translate(px, pz); mg.rotate(-a);
+  mg.fillStyle = 'rgba(46,204,113,.25)'; mg.beginPath(); mg.moveTo(0, 0); mg.arc(0, 0, 34, -Math.PI / 2 - 0.55, -Math.PI / 2 + 0.55); mg.fill();
+  mg.fillStyle = '#e74c3c'; mg.beginPath(); mg.moveTo(0, -10); mg.lineTo(7, 7); mg.lineTo(0, 3); mg.lineTo(-7, 7); mg.closePath(); mg.fill();
+  mg.restore();
+}
+mapC.addEventListener('click', e => {
+  const r = mapC.getBoundingClientRect();
+  const cx = (e.clientX - r.left) * mapC.width / r.width, cz = (e.clientY - r.top) * mapC.height / r.height;
+  const x = X0 + (cx - mx(X0)) / MS, z = Z0 + (cz - 10) / MS;
+  if (!blocked(x, z)) goTo({ x, z, yaw: player.yaw });
+});
+
+// ---------- Loop ----------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+const clock = new THREE.Clock();
+function loop() {
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  if (mode === 'walk') updateWalk(dt); else orbit.update();
+  rings.forEach((r, i) => { const s = 1 + 0.12 * Math.sin(t * 3 + i); r.scale.set(s, s, s); });
+  drawMap();
+  renderer.render(scene, camera);
+  requestAnimationFrame(loop);
+}
+loop();
+const ld = document.getElementById('loading');
+ld.style.opacity = 0; setTimeout(() => ld.remove(), 600);
+console.log('Products on shelves:', productCount);
+</script>
+</body>
+</html>
